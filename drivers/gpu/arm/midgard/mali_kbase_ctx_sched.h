@@ -1,67 +1,87 @@
 /*
  *
- * (C) COPYRIGHT 2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2017-2018, 2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
-
-
 
 #ifndef _KBASE_CTX_SCHED_H_
 #define _KBASE_CTX_SCHED_H_
 
 #include <mali_kbase.h>
 
-/* The Context Scheduler manages address space assignment and reference
+/**
+ * The Context Scheduler manages address space assignment and reference
  * counting to kbase_context. The interface has been designed to minimise
  * interactions between the Job Scheduler and Power Management/MMU to support
- * both the existing Job Scheduler and Command Stream Frontend interface.
+ * the existing Job Scheduler interface.
  *
  * The initial implementation of the Context Scheduler does not schedule
- * contexts. Instead it relies on the Job Scheduler/CSF to make decisions of
+ * contexts. Instead it relies on the Job Scheduler to make decisions of
  * when to schedule/evict contexts if address spaces are starved. In the
- * future, once an interface between the CS and JS/CSF have been devised to
+ * future, once an interface between the CS and JS has been devised to
  * provide enough information about how each context is consuming GPU resources,
  * those decisions can be made in the CS itself, thereby reducing duplicated
  * code.
  */
 
-/* base_ctx_sched_init - Initialise the context scheduler
+/**
+ * kbase_ctx_sched_init - Initialise the context scheduler
+ * @kbdev: The device for which the context scheduler needs to be initialised
  *
- * @kbdev: The device for which the context scheduler needs to be
- *         initialised
+ * This must be called during device initialisation. The number of hardware
+ * address spaces must already be established before calling this function.
  *
  * Return: 0 for success, otherwise failure
- *
- * This must be called during device initilisation. The number of hardware
- * address spaces must already be established before calling this function.
  */
 int kbase_ctx_sched_init(struct kbase_device *kbdev);
 
-/* base_ctx_sched_term - Terminate the context scheduler
- *
- * @kbdev: The device for which the context scheduler needs to be
- *         terminated
+/**
+ * kbase_ctx_sched_term - Terminate the context scheduler
+ * @kbdev: The device for which the context scheduler needs to be terminated
  *
  * This must be called during device termination after all contexts have been
  * destroyed.
  */
 void kbase_ctx_sched_term(struct kbase_device *kbdev);
 
-/* kbase_ctx_sched_retain_ctx - Retain a reference to the @ref kbase_context
- *
+/**
+ * kbase_ctx_sched_retain_ctx - Retain a reference to the @ref kbase_context
  * @kctx: The context to which to retain a reference
- *
- * Return: The address space that the context has been assigned to or
- *         KBASEP_AS_NR_INVALID if no address space was available.
  *
  * This function should be called whenever an address space should be assigned
  * to a context and programmed onto the MMU. It should typically be called
@@ -72,11 +92,14 @@ void kbase_ctx_sched_term(struct kbase_device *kbdev);
  *
  * The kbase_device::mmu_hw_mutex and kbase_device::hwaccess_lock locks must be
  * held whilst calling this function.
+ *
+ * Return: The address space that the context has been assigned to or
+ *         KBASEP_AS_NR_INVALID if no address space was available.
  */
 int kbase_ctx_sched_retain_ctx(struct kbase_context *kctx);
 
-/* kbase_ctx_sched_retain_ctx_refcount
- *
+/**
+ * kbase_ctx_sched_retain_ctx_refcount
  * @kctx: The context to which to retain a reference
  *
  * This function only retains a reference to the context. It must be called
@@ -87,14 +110,11 @@ int kbase_ctx_sched_retain_ctx(struct kbase_context *kctx);
  * it doesn't get descheduled.
  *
  * The kbase_device::hwaccess_lock must be held whilst calling this function
- * @return
- *	若成功, 返回 0;
- *	若 *kctx 状态异常, 返回 -1.
  */
-int kbase_ctx_sched_retain_ctx_refcount(struct kbase_context *kctx);
+void kbase_ctx_sched_retain_ctx_refcount(struct kbase_context *kctx);
 
-/* kbase_ctx_sched_release_ctx - Release a reference to the @ref kbase_context
- *
+/**
+ * kbase_ctx_sched_release_ctx - Release a reference to the @ref kbase_context
  * @kctx: The context from which to release a reference
  *
  * This function should be called whenever an address space could be unassigned
@@ -106,8 +126,8 @@ int kbase_ctx_sched_retain_ctx_refcount(struct kbase_context *kctx);
  */
 void kbase_ctx_sched_release_ctx(struct kbase_context *kctx);
 
-/* kbase_ctx_sched_remove_ctx - Unassign previously assigned address space
- *
+/**
+ * kbase_ctx_sched_remove_ctx - Unassign previously assigned address space
  * @kctx: The context to be removed
  *
  * This function should be called when a context is being destroyed. The
@@ -119,8 +139,8 @@ void kbase_ctx_sched_release_ctx(struct kbase_context *kctx);
  */
 void kbase_ctx_sched_remove_ctx(struct kbase_context *kctx);
 
-/* kbase_ctx_sched_restore_all_as - Reprogram all address spaces
- *
+/**
+ * kbase_ctx_sched_restore_all_as - Reprogram all address spaces
  * @kbdev: The device for which address spaces to be reprogrammed
  *
  * This function shall reprogram all address spaces previously assigned to
@@ -130,5 +150,115 @@ void kbase_ctx_sched_remove_ctx(struct kbase_context *kctx);
  * held whilst calling this function.
  */
 void kbase_ctx_sched_restore_all_as(struct kbase_device *kbdev);
+
+/**
+ * kbase_ctx_sched_as_to_ctx_refcount - Lookup a context based on its current
+ * address space and ensure that is stays scheduled in
+ * @kbdev: The device for which the returned context must belong
+ * @as_nr: address space assigned to the context of interest
+ *
+ * The context is refcounted as being busy to prevent it from scheduling
+ * out. It must be released with kbase_ctx_sched_release_ctx() when it is no
+ * longer required to stay scheduled in.
+ *
+ * This function can safely be called from IRQ context.
+ *
+ * The following locking conditions are made on the caller:
+ * * it must not hold the kbase_device::hwaccess_lock, because it will be used
+ *   internally.
+ *
+ * Return: a valid struct kbase_context on success, which has been refcounted
+ * as being busy or return NULL on failure, indicating that no context was found
+ * in as_nr.
+ */
+struct kbase_context *kbase_ctx_sched_as_to_ctx_refcount(
+		struct kbase_device *kbdev, size_t as_nr);
+
+/**
+ * kbase_ctx_sched_as_to_ctx - Lookup a context based on its current address
+ * space
+ * @kbdev: The device for which the returned context must belong
+ * @as_nr: address space assigned to the context of interest
+ *
+ * Return: a valid struct kbase_context on success or NULL on failure,
+ * indicating that no context was found in as_nr.
+ */
+struct kbase_context *kbase_ctx_sched_as_to_ctx(struct kbase_device *kbdev,
+		size_t as_nr);
+
+/**
+ * kbase_ctx_sched_as_to_ctx_nolock - Lookup a context based on its current
+ * address space.
+ * @kbdev: The device for which the returned context must belong
+ * @as_nr: address space assigned to the context of interest
+ *
+ * The following lock must be held by the caller:
+ * * kbase_device::hwaccess_lock
+ *
+ * Return: a valid struct kbase_context on success or NULL on failure,
+ * indicating that no context was found in as_nr.
+ */
+struct kbase_context *kbase_ctx_sched_as_to_ctx_nolock(
+		struct kbase_device *kbdev, size_t as_nr);
+
+/**
+ * kbase_ctx_sched_inc_refcount_nolock - Refcount a context as being busy,
+ * preventing it from being scheduled out.
+ * @kctx: Context to be refcounted
+ *
+ * The following locks must be held by the caller:
+ * * kbase_device::mmu_hw_mutex
+ * * kbase_device::hwaccess_lock
+ *
+ * Return: true if refcount succeeded, and the context will not be scheduled
+ * out, false if the refcount failed (because the context is being/has been
+ * scheduled out).
+ */
+bool kbase_ctx_sched_inc_refcount_nolock(struct kbase_context *kctx);
+
+/**
+ * kbase_ctx_sched_inc_refcount - Refcount a context as being busy, preventing
+ * it from being scheduled out.
+ * @kctx: Context to be refcounted
+ *
+ * The following locking conditions are made on the caller:
+ * * it must not hold kbase_device::mmu_hw_mutex and
+ *   kbase_device::hwaccess_lock, because they will be used internally.
+ *
+ * Return: true if refcount succeeded, and the context will not be scheduled
+ * out, false if the refcount failed (because the context is being/has been
+ * scheduled out).
+ */
+bool kbase_ctx_sched_inc_refcount(struct kbase_context *kctx);
+
+/**
+ * kbase_ctx_sched_release_ctx_lock - Release a reference count of a context
+ * @kctx: Context for which refcount should be decreased
+ *
+ * Effectivelly, this is a wrapper for kbase_ctx_sched_release_ctx, but
+ * kbase_device::hwaccess_lock is required NOT to be locked.
+ */
+void kbase_ctx_sched_release_ctx_lock(struct kbase_context *kctx);
+
+#if MALI_USE_CSF
+/**
+ * kbase_ctx_sched_refcount_mmu_flush - Refcount the context for the MMU flush
+ *                                      operation.
+ *
+ * @kctx: Context to be refcounted.
+ * @sync: Flag passed to the caller function kbase_mmu_flush_invalidate().
+ *
+ * This function takes a reference on the context for the MMU flush operation.
+ * The refcount is taken only if the context is busy/active.
+ * If the context isn't active but has a GPU address space slot assigned to it
+ * then a flag is set to indicate that MMU flush operation is pending, which
+ * will be performed when the context becomes active.
+ *
+ * Return: true if refcount succeeded and the address space slot will not be
+ * reassigned, false if the refcount failed (because the context was inactive)
+ */
+bool kbase_ctx_sched_refcount_mmu_flush(struct kbase_context *kctx,
+					bool sync);
+#endif
 
 #endif /* _KBASE_CTX_SCHED_H_ */

@@ -1,84 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2011-2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
 
 #include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
-#include <mali_kbase_fence_defs.h>
 #include <mali_kbase_fence.h>
 #include <mali_kbase.h>
 
 /* Spin lock protecting all Mali fences as fence->lock. */
 static DEFINE_SPINLOCK(kbase_fence_lock);
 
-static const char *
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
-kbase_fence_get_driver_name(struct fence *fence)
-#else
-kbase_fence_get_driver_name(struct dma_fence *fence)
-#endif
-{
-	return kbase_drv_name;
-}
-
-static const char *
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
-kbase_fence_get_timeline_name(struct fence *fence)
-#else
-kbase_fence_get_timeline_name(struct dma_fence *fence)
-#endif
-{
-	return kbase_timeline_name;
-}
-
-static bool
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
-kbase_fence_enable_signaling(struct fence *fence)
-#else
-kbase_fence_enable_signaling(struct dma_fence *fence)
-#endif
-{
-	return true;
-}
-
-static void
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
-kbase_fence_fence_value_str(struct fence *fence, char *str, int size)
-#else
-kbase_fence_fence_value_str(struct dma_fence *fence, char *str, int size)
-#endif
-{
-	snprintf(str, size, "%u", fence->seqno);
-}
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
-const struct fence_ops kbase_fence_ops = {
-	.wait = fence_default_wait,
-#else
-const struct dma_fence_ops kbase_fence_ops = {
-	.wait = dma_fence_default_wait,
-#endif
-	.get_driver_name = kbase_fence_get_driver_name,
-	.get_timeline_name = kbase_fence_get_timeline_name,
-	.enable_signaling = kbase_fence_enable_signaling,
-	.fence_value_str = kbase_fence_fence_value_str
-};
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 struct fence *
 kbase_fence_out_new(struct kbase_jd_atom *katom)
 #else
@@ -86,7 +38,7 @@ struct dma_fence *
 kbase_fence_out_new(struct kbase_jd_atom *katom)
 #endif
 {
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 	struct fence *fence;
 #else
 	struct dma_fence *fence;
@@ -147,7 +99,7 @@ kbase_fence_free_callbacks(struct kbase_jd_atom *katom)
 	return res;
 }
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 int
 kbase_fence_add_callback(struct kbase_jd_atom *katom,
 			 struct fence *fence,
@@ -172,22 +124,29 @@ kbase_fence_add_callback(struct kbase_jd_atom *katom,
 	kbase_fence_cb->fence = fence;
 	kbase_fence_cb->katom = katom;
 	INIT_LIST_HEAD(&kbase_fence_cb->node);
+	atomic_inc(&katom->dma_fence.dep_count);
 
 	err = dma_fence_add_callback(fence, &kbase_fence_cb->fence_cb,
 				     callback);
 	if (err == -ENOENT) {
-		/* Fence signaled, clear the error and return */
-		err = 0;
+		/* Fence signaled, get the completion result */
+		err = dma_fence_get_status(fence);
+
+		/* remap success completion to err code */
+		if (err == 1)
+			err = 0;
+
 		kfree(kbase_fence_cb);
+		atomic_dec(&katom->dma_fence.dep_count);
 	} else if (err) {
 		kfree(kbase_fence_cb);
+		atomic_dec(&katom->dma_fence.dep_count);
 	} else {
 		/*
 		 * Get reference to fence that will be kept until callback gets
 		 * cleaned up in kbase_fence_free_callbacks().
 		 */
 		dma_fence_get(fence);
-		atomic_inc(&katom->dma_fence.dep_count);
 		/* Add callback to katom's list of callbacks */
 		list_add(&kbase_fence_cb->node, &katom->dma_fence.callbacks);
 	}

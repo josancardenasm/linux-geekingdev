@@ -1,20 +1,43 @@
 /*
  *
- * (C) COPYRIGHT 2014-2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2014-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
-
-
-
 
 /*
  * HW access job manager common APIs
@@ -81,6 +104,7 @@ bool kbase_backend_use_ctx(struct kbase_device *kbdev,
  * kbase_backend_use_ctx_sched() - Activate a context.
  * @kbdev:	Device pointer
  * @kctx:	Context pointer
+ * @js:         Job slot to activate context on
  *
  * kbase_gpu_next_job() will pull atoms from the active context.
  *
@@ -94,7 +118,7 @@ bool kbase_backend_use_ctx(struct kbase_device *kbdev,
  *	   not have an address space assigned)
  */
 bool kbase_backend_use_ctx_sched(struct kbase_device *kbdev,
-					struct kbase_context *kctx);
+					struct kbase_context *kctx, int js);
 
 /**
  * kbase_backend_release_ctx_irq - Release a context from the GPU. This will
@@ -122,7 +146,7 @@ void kbase_backend_release_ctx_noirq(struct kbase_device *kbdev,
 						struct kbase_context *kctx);
 
 /**
- * kbase_backend_cacheclean - Perform a cache clean if the given atom requires
+ * kbase_backend_cache_clean - Perform a cache clean if the given atom requires
  *                            one
  * @kbdev:	Device pointer
  * @katom:	Pointer to the failed atom
@@ -130,7 +154,7 @@ void kbase_backend_release_ctx_noirq(struct kbase_device *kbdev,
  * On some GPUs, the GPU cache must be cleaned following a failed atom. This
  * function performs a clean if it is required by @katom.
  */
-void kbase_backend_cacheclean(struct kbase_device *kbdev,
+void kbase_backend_cache_clean(struct kbase_device *kbdev,
 		struct kbase_jd_atom *katom);
 
 
@@ -148,21 +172,20 @@ void kbase_backend_cacheclean(struct kbase_device *kbdev,
 void kbase_backend_complete_wq(struct kbase_device *kbdev,
 				struct kbase_jd_atom *katom);
 
+#if !MALI_USE_CSF
 /**
  * kbase_backend_complete_wq_post_sched - Perform backend-specific actions
  *                                        required on completing an atom, after
  *                                        any scheduling has taken place.
  * @kbdev:         Device pointer
  * @core_req:      Core requirements of atom
- * @affinity:      Affinity of atom
- * @coreref_state: Coreref state of atom
  *
  * This function should only be called from kbase_jd_done_worker() or
  * js_return_worker().
  */
 void kbase_backend_complete_wq_post_sched(struct kbase_device *kbdev,
-		base_jd_core_req core_req, u64 affinity,
-		enum kbase_atom_coreref_state coreref_state);
+		base_jd_core_req core_req);
+#endif /* !MALI_USE_CSF */
 
 /**
  * kbase_backend_reset() - The GPU is being reset. Cancel all jobs on the GPU
@@ -171,17 +194,6 @@ void kbase_backend_complete_wq_post_sched(struct kbase_device *kbdev,
  * @end_timestamp:	Timestamp of reset
  */
 void kbase_backend_reset(struct kbase_device *kbdev, ktime_t *end_timestamp);
-
-/**
- * kbase_backend_inspect_head() - Return the atom currently at the head of slot
- *				  @js
- * @kbdev:	Device pointer
- * @js:		Job slot to inspect
- *
- * Return : Atom currently at the head of slot @js, or NULL
- */
-struct kbase_jd_atom *kbase_backend_inspect_head(struct kbase_device *kbdev,
-					int js);
 
 /**
  * kbase_backend_inspect_tail - Return the atom currently at the tail of slot
@@ -255,14 +267,16 @@ void kbase_job_check_leave_disjoint(struct kbase_device *kbdev,
 		struct kbase_jd_atom *target_katom);
 
 /**
- * kbase_backend_jm_kill_jobs_from_kctx - Kill all jobs that are currently
- *                                        running from a context
+ * kbase_backend_jm_kill_running_jobs_from_kctx - Kill all jobs that are
+ *                               currently running on GPU from a context
  * @kctx: Context pointer
  *
  * This is used in response to a page fault to remove all jobs from the faulting
  * context from the hardware.
+ *
+ * Caller must hold hwaccess_lock.
  */
-void kbase_backend_jm_kill_jobs_from_kctx(struct kbase_context *kctx);
+void kbase_backend_jm_kill_running_jobs_from_kctx(struct kbase_context *kctx);
 
 /**
  * kbase_jm_wait_for_zero_jobs - Wait for context to have zero jobs running, and
@@ -283,86 +297,6 @@ void kbase_jm_wait_for_zero_jobs(struct kbase_context *kctx);
  */
 u32 kbase_backend_get_current_flush_id(struct kbase_device *kbdev);
 
-#if KBASE_GPU_RESET_EN
-/**
- * kbase_prepare_to_reset_gpu - Prepare for resetting the GPU.
- * @kbdev: Device pointer
- *
- * This function just soft-stops all the slots to ensure that as many jobs as
- * possible are saved.
- *
- * Return: a boolean which should be interpreted as follows:
- * - true  - Prepared for reset, kbase_reset_gpu should be called.
- * - false - Another thread is performing a reset, kbase_reset_gpu should
- *                not be called.
- */
-bool kbase_prepare_to_reset_gpu(struct kbase_device *kbdev);
-
-/**
- * kbase_reset_gpu - Reset the GPU
- * @kbdev: Device pointer
- *
- * This function should be called after kbase_prepare_to_reset_gpu if it returns
- * true. It should never be called without a corresponding call to
- * kbase_prepare_to_reset_gpu.
- *
- * After this function is called (or not called if kbase_prepare_to_reset_gpu
- * returned false), the caller should wait for kbdev->reset_waitq to be
- * signalled to know when the reset has completed.
- */
-void kbase_reset_gpu(struct kbase_device *kbdev);
-
-/**
- * kbase_prepare_to_reset_gpu_locked - Prepare for resetting the GPU.
- * @kbdev: Device pointer
- *
- * This function just soft-stops all the slots to ensure that as many jobs as
- * possible are saved.
- *
- * Return: a boolean which should be interpreted as follows:
- * - true  - Prepared for reset, kbase_reset_gpu should be called.
- * - false - Another thread is performing a reset, kbase_reset_gpu should
- *                not be called.
- */
-bool kbase_prepare_to_reset_gpu_locked(struct kbase_device *kbdev);
-
-/**
- * kbase_reset_gpu_locked - Reset the GPU
- * @kbdev: Device pointer
- *
- * This function should be called after kbase_prepare_to_reset_gpu if it
- * returns true. It should never be called without a corresponding call to
- * kbase_prepare_to_reset_gpu.
- *
- * After this function is called (or not called if kbase_prepare_to_reset_gpu
- * returned false), the caller should wait for kbdev->reset_waitq to be
- * signalled to know when the reset has completed.
- */
-void kbase_reset_gpu_locked(struct kbase_device *kbdev);
-
-/**
- * kbase_reset_gpu_silent - Reset the GPU silently
- * @kbdev: Device pointer
- *
- * Reset the GPU without trying to cancel jobs and don't emit messages into
- * the kernel log while doing the reset.
- *
- * This function should be used in cases where we are doing a controlled reset
- * of the GPU as part of normal processing (e.g. exiting protected mode) where
- * the driver will have ensured the scheduler has been idled and all other
- * users of the GPU (e.g. instrumentation) have been suspended.
- */
-void kbase_reset_gpu_silent(struct kbase_device *kbdev);
-
-/**
- * kbase_reset_gpu_active - Reports if the GPU is being reset
- * @kbdev: Device pointer
- *
- * Return: True if the GPU is in the process of being reset.
- */
-bool kbase_reset_gpu_active(struct kbase_device *kbdev);
-#endif
-
 /**
  * kbase_job_slot_hardstop - Hard-stop the specified job slot
  * @kctx:         The kbase context that contains the job(s) that should
@@ -376,6 +310,13 @@ bool kbase_reset_gpu_active(struct kbase_device *kbdev);
 void kbase_job_slot_hardstop(struct kbase_context *kctx, int js,
 				struct kbase_jd_atom *target_katom);
 
-extern struct protected_mode_ops kbase_native_protected_ops;
+/**
+ * kbase_gpu_atoms_submitted_any() - Inspect whether there are any atoms
+ * currently on the GPU
+ * @kbdev:  Device pointer
+ *
+ * Return: true if there are any atoms on the GPU, false otherwise
+ */
+bool kbase_gpu_atoms_submitted_any(struct kbase_device *kbdev);
 
 #endif /* _KBASE_HWACCESS_JM_H_ */

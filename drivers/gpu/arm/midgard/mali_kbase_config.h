@@ -1,21 +1,43 @@
 /*
  *
- * (C) COPYRIGHT 2010-2016 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2010-2017, 2019-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
-
-
-
-
 
 /**
  * @file mali_kbase_config.h
@@ -25,10 +47,10 @@
 #ifndef _KBASE_CONFIG_H_
 #define _KBASE_CONFIG_H_
 
-#include <asm/page.h>
-
+#include <linux/mm.h>
 #include <mali_malisw.h>
 #include <mali_kbase_backend_config.h>
+#include <linux/rbtree.h>
 
 /**
  * @addtogroup base_api
@@ -44,8 +66,6 @@
  * @addtogroup kbase_config Configuration API and Attributes
  * @{
  */
-
-#include <linux/rbtree.h>
 
 /* Forward declaration of struct kbase_device */
 struct kbase_device;
@@ -206,42 +226,101 @@ struct kbase_pm_callback_conf {
 	 * suspeneded by runtime PM, else OS error code
 	 */
 	int (*power_runtime_idle_callback)(struct kbase_device *kbdev);
+
+	/*
+	 * Optional callback for software reset
+	 *
+	 * This callback will be called by the power management core to trigger
+	 * a GPU soft reset.
+	 *
+	 * Return 0 if the soft reset was successful and the RESET_COMPLETED
+	 * interrupt will be raised, or a positive value if the interrupt won't
+	 * be raised. On error, return the corresponding OS error code.
+	 */
+	int (*soft_reset_callback)(struct kbase_device *kbdev);
+};
+
+/* struct kbase_gpu_clk_notifier_data - Data for clock rate change notifier.
+ *
+ * Pointer to this structure is supposed to be passed to the gpu clock rate
+ * change notifier function. This structure is deliberately aligned with the
+ * common clock framework notification structure 'struct clk_notifier_data'
+ * and such alignment should be maintained.
+ *
+ * @gpu_clk_handle: Handle of the GPU clock for which notifier was registered.
+ * @old_rate:       Previous rate of this GPU clock.
+ * @new_rate:       New rate of this GPU clock.
+ */
+struct kbase_gpu_clk_notifier_data {
+	void *gpu_clk_handle;
+	unsigned long old_rate;
+	unsigned long new_rate;
 };
 
 /**
- * kbase_cpuprops_get_default_clock_speed - default for CPU_SPEED_FUNC
- * @clock_speed - see  kbase_cpu_clk_speed_func for details on the parameters
+ * kbase_clk_rate_trace_op_conf - Specifies GPU clock rate trace operations.
  *
- * Returns 0 on success, negative error code otherwise.
- *
- * Default implementation of CPU_SPEED_FUNC. This function sets clock_speed
- * to 100, so will be an underestimate for any real system.
+ * Specifies the functions pointers for platform specific GPU clock rate trace
+ * operations. By default no functions are required.
  */
-int kbase_cpuprops_get_default_clock_speed(u32 * const clock_speed);
+struct kbase_clk_rate_trace_op_conf {
+	/**
+	 * enumerate_gpu_clk - Enumerate a GPU clock on the given index
+	 * @kbdev - kbase_device pointer
+	 * @index - GPU clock index
+	 *
+	 * Returns a handle unique to the given GPU clock, or NULL if the clock
+	 * array has been exhausted at the given index value.
+	 *
+	 * Kbase will use this function pointer to enumerate the existence of a
+	 * GPU clock on the given index.
+	 */
+	void *(*enumerate_gpu_clk)(struct kbase_device *kbdev,
+		unsigned int index);
 
-/**
- * kbase_cpu_clk_speed_func - Type of the function pointer for CPU_SPEED_FUNC
- * @param clock_speed - pointer to store the current CPU clock speed in MHz
- *
- * Returns 0 on success, otherwise negative error code.
- *
- * This is mainly used to implement OpenCL's clGetDeviceInfo().
- */
-typedef int (*kbase_cpu_clk_speed_func) (u32 *clock_speed);
+	/**
+	 * get_gpu_clk_rate - Get the current rate for an enumerated clock.
+	 * @kbdev          - kbase_device pointer
+	 * @gpu_clk_handle - Handle unique to the enumerated GPU clock
+	 *
+	 * Returns current rate of the GPU clock in unit of Hz.
+	 */
+	unsigned long (*get_gpu_clk_rate)(struct kbase_device *kbdev,
+		void *gpu_clk_handle);
 
-/**
- * kbase_gpu_clk_speed_func - Type of the function pointer for GPU_SPEED_FUNC
- * @param clock_speed - pointer to store the current GPU clock speed in MHz
- *
- * Returns 0 on success, otherwise negative error code.
- * When an error is returned the caller assumes maximum GPU speed stored in
- * gpu_freq_khz_max.
- *
- * If the system timer is not available then this function is required
- * for the OpenCL queue profiling to return correct timing information.
- *
- */
-typedef int (*kbase_gpu_clk_speed_func) (u32 *clock_speed);
+	/**
+	 * gpu_clk_notifier_register - Register a clock rate change notifier.
+	 * @kbdev          - kbase_device pointer
+	 * @gpu_clk_handle - Handle unique to the enumerated GPU clock
+	 * @nb             - notifier block containing the callback function
+	 *                   pointer
+	 *
+	 * Returns 0 on success, negative error code otherwise.
+	 *
+	 * This function pointer is used to register a callback function that
+	 * is supposed to be invoked whenever the rate of clock corresponding
+	 * to @gpu_clk_handle changes.
+	 * @nb contains the pointer to callback function.
+	 * The callback function expects the pointer of type
+	 * 'struct kbase_gpu_clk_notifier_data' as the third argument.
+	 */
+	int (*gpu_clk_notifier_register)(struct kbase_device *kbdev,
+		void *gpu_clk_handle, struct notifier_block *nb);
+
+	/**
+	 * gpu_clk_notifier_unregister - Unregister clock rate change notifier
+	 * @kbdev          - kbase_device pointer
+	 * @gpu_clk_handle - Handle unique to the enumerated GPU clock
+	 * @nb             - notifier block containing the callback function
+	 *                   pointer
+	 *
+	 * This function pointer is used to unregister a callback function that
+	 * was previously registered to get notified of the change in rate
+	 * of clock corresponding to @gpu_clk_handle.
+	 */
+	void (*gpu_clk_notifier_unregister)(struct kbase_device *kbdev,
+		void *gpu_clk_handle, struct notifier_block *nb);
+};
 
 #ifdef CONFIG_OF
 struct kbase_platform_config {
@@ -304,22 +383,9 @@ int kbasep_platform_device_init(struct kbase_device *kbdev);
  */
 void kbasep_platform_device_term(struct kbase_device *kbdev);
 
-
-/**
- * kbase_platform_early_init - Early initialisation of the platform code
- *
- * This function will be called when the module is loaded to perform any
- * early initialisation required by the platform code. Such as reading
- * platform specific device tree entries for the GPU.
- *
- * Return: 0 for success, any other fail causes module initialisation to fail
- */
-int kbase_platform_early_init(void);
-
 #ifndef CONFIG_OF
-#ifdef CONFIG_MALI_PLATFORM_FAKE
 /**
- * kbase_platform_fake_register - Register a platform device for the GPU
+ * kbase_platform_register - Register a platform device for the GPU
  *
  * This can be used to register a platform device on systems where device tree
  * is not enabled and the platform initialisation code in the kernel doesn't
@@ -327,15 +393,14 @@ int kbase_platform_early_init(void);
  *
  * Return: 0 for success, any other fail causes module initialisation to fail
  */
-int kbase_platform_fake_register(void);
+int kbase_platform_register(void);
 
 /**
- * kbase_platform_fake_unregister - Unregister a fake platform device
+ * kbase_platform_unregister - Unregister a fake platform device
  *
- * Unregister the platform device created with kbase_platform_fake_register()
+ * Unregister the platform device created with kbase_platform_register()
  */
-void kbase_platform_fake_unregister(void);
-#endif
+void kbase_platform_unregister(void);
 #endif
 
 	  /** @} *//* end group kbase_config */
