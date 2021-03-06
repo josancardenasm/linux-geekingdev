@@ -1,19 +1,43 @@
 /*
  *
- * (C) COPYRIGHT 2010-2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2010-2018, 2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
-
-
 
 #ifndef _KBASE_FENCE_DEFS_H_
 #define _KBASE_FENCE_DEFS_H_
@@ -23,11 +47,9 @@
  * This file hides the compatibility issues with this for the rest the driver
  */
 
-#if defined(CONFIG_MALI_DMA_FENCE) || defined(CONFIG_SYNC_FILE)
-
 #include <linux/version.h>
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 
 #include <linux/fence.h>
 
@@ -40,12 +62,22 @@
 #define dma_fence_add_callback(a, b, c) fence_add_callback(a, b, c)
 #define dma_fence_remove_callback(a, b) fence_remove_callback(a, b)
 
+#if (KERNEL_VERSION(4, 9, 68) <= LINUX_VERSION_CODE)
+#define dma_fence_get_status(a) (fence_is_signaled(a) ? (a)->error ?: 1 : 0)
+#else
+#define dma_fence_get_status(a) (fence_is_signaled(a) ? (a)->status ?: 1 : 0)
+#endif
+
 #else
 
 #include <linux/dma-fence.h>
 
-#endif /* < 4.10.0 */
+#if (KERNEL_VERSION(4, 11, 0) > LINUX_VERSION_CODE)
+#define dma_fence_get_status(a) (dma_fence_is_signaled(a) ? \
+	(a)->status ?: 1 \
+	: 0)
+#endif
 
-#endif /* CONFIG_MALI_DMA_FENCE || CONFIG_SYNC_FILE */
+#endif /* < 4.10.0 */
 
 #endif /* _KBASE_FENCE_DEFS_H_ */

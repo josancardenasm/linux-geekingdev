@@ -1,97 +1,44 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2011-2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
  * Foundation, and any use by you of this program is subject to the terms
  * of such GNU licence.
  *
- * A copy of the licence is included with the program, and can also be obtained
- * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- * Boston, MA  02110-1301, USA.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
+ * SPDX-License-Identifier: GPL-2.0
  *
  */
-
-
-
-
 
 /*
  * Base kernel property query APIs
  */
 
 #include <mali_kbase.h>
-#include <mali_midg_regmap.h>
+#include <gpu/mali_kbase_gpu_regmap.h>
 #include <mali_kbase_gpuprops.h>
-#include <mali_kbase_config_defaults.h>
 #include <mali_kbase_hwaccess_gpuprops.h>
+#include <mali_kbase_config_defaults.h>
 #include "mali_kbase_ioctl.h"
 #include <linux/clk.h>
+#include <mali_kbase_pm_internal.h>
+#include <linux/of_platform.h>
+#include <linux/moduleparam.h>
 
-/**
- * KBASE_UBFX32 - Extracts bits from a 32-bit bitfield.
- * @value:  The value from which to extract bits.
- * @offset: The first bit to extract (0 being the LSB).
- * @size:   The number of bits to extract.
- *
- * Context: @offset + @size <= 32.
- *
- * Return: Bits [@offset, @offset + @size) from @value.
- */
-/* from mali_cdsb.h */
-#define KBASE_UBFX32(value, offset, size) \
-	(((u32)(value) >> (u32)(offset)) & (u32)((1ULL << (u32)(size)) - 1))
 
-int kbase_gpuprops_uk_get_props(struct kbase_context *kctx, struct kbase_uk_gpuprops * const kbase_props)
-{
-	kbase_gpu_clk_speed_func get_gpu_speed_mhz;
-	u32 gpu_speed_mhz;
-	int rc = 1;
-
-	KBASE_DEBUG_ASSERT(NULL != kctx);
-	KBASE_DEBUG_ASSERT(NULL != kbase_props);
-
-	/* Current GPU speed is requested from the system integrator via the GPU_SPEED_FUNC function.
-	 * If that function fails, or the function is not provided by the system integrator, we report the maximum
-	 * GPU speed as specified by GPU_FREQ_KHZ_MAX.
-	 */
-	get_gpu_speed_mhz = (kbase_gpu_clk_speed_func) GPU_SPEED_FUNC;
-	if (get_gpu_speed_mhz != NULL) {
-		rc = get_gpu_speed_mhz(&gpu_speed_mhz);
-#ifdef CONFIG_MALI_DEBUG
-		/* Issue a warning message when the reported GPU speed falls outside the min/max range */
-		if (rc == 0) {
-			u32 gpu_speed_khz = gpu_speed_mhz * 1000;
-
-			if (gpu_speed_khz < kctx->kbdev->gpu_props.props.core_props.gpu_freq_khz_min ||
-					gpu_speed_khz > kctx->kbdev->gpu_props.props.core_props.gpu_freq_khz_max)
-				dev_warn(kctx->kbdev->dev, "GPU Speed is outside of min/max range (got %lu Khz, min %lu Khz, max %lu Khz)\n",
-						(unsigned long)gpu_speed_khz,
-						(unsigned long)kctx->kbdev->gpu_props.props.core_props.gpu_freq_khz_min,
-						(unsigned long)kctx->kbdev->gpu_props.props.core_props.gpu_freq_khz_max);
-		}
-#endif				/* CONFIG_MALI_DEBUG */
-	}
-	if (kctx->kbdev->clock) {
-		gpu_speed_mhz = clk_get_rate(kctx->kbdev->clock) / 1000000;
-		rc = 0;
-	}
-	if (rc != 0)
-		gpu_speed_mhz = kctx->kbdev->gpu_props.props.core_props.gpu_freq_khz_max / 1000;
-
-	kctx->kbdev->gpu_props.props.core_props.gpu_speed_mhz = gpu_speed_mhz;
-
-	memcpy(&kbase_props->props, &kctx->kbdev->gpu_props.props, sizeof(kbase_props->props));
-
-	/* Before API 8.2 they expect L3 cache info here, which was always 0 */
-	if (kctx->api_version < KBASE_API_VERSION(8, 2))
-		kbase_props->props.raw_props.suspend_size = 0;
-
-	return 0;
-}
-
-static void kbase_gpuprops_construct_coherent_groups(base_gpu_props * const props)
+static void kbase_gpuprops_construct_coherent_groups(
+	struct base_gpu_props * const props)
 {
 	struct mali_base_gpu_coherent_group *current_group;
 	u64 group_present;
@@ -99,7 +46,7 @@ static void kbase_gpuprops_construct_coherent_groups(base_gpu_props * const prop
 	u64 first_set, first_set_prev;
 	u32 num_groups = 0;
 
-	KBASE_DEBUG_ASSERT(NULL != props);
+	KBASE_DEBUG_ASSERT(props != NULL);
 
 	props->coherency_info.coherency = props->raw_props.mem_features;
 	props->coherency_info.num_core_groups = hweight64(props->raw_props.l2_present);
@@ -160,29 +107,35 @@ static void kbase_gpuprops_construct_coherent_groups(base_gpu_props * const prop
 
 /**
  * kbase_gpuprops_get_props - Get the GPU configuration
- * @gpu_props: The &base_gpu_props structure
+ * @gpu_props: The &struct base_gpu_props structure
  * @kbdev: The &struct kbase_device structure for the device
  *
- * Fill the &base_gpu_props structure with values from the GPU configuration
- * registers. Only the raw properties are filled in this function
+ * Fill the &struct base_gpu_props structure with values from the GPU
+ * configuration registers. Only the raw properties are filled in this function.
+ *
+ * Return: Zero on success, Linux error code on failure
  */
-static void kbase_gpuprops_get_props(base_gpu_props * const gpu_props, struct kbase_device *kbdev)
+static int kbase_gpuprops_get_props(struct base_gpu_props * const gpu_props,
+	struct kbase_device *kbdev)
 {
 	struct kbase_gpuprops_regdump regdump;
 	int i;
+	int err;
 
-	KBASE_DEBUG_ASSERT(NULL != kbdev);
-	KBASE_DEBUG_ASSERT(NULL != gpu_props);
+	KBASE_DEBUG_ASSERT(kbdev != NULL);
+	KBASE_DEBUG_ASSERT(gpu_props != NULL);
 
 	/* Dump relevant registers */
-	kbase_backend_gpuprops_get(kbdev, &regdump);
+	err = kbase_backend_gpuprops_get(kbdev, &regdump);
+	if (err)
+		return err;
 
 	gpu_props->raw_props.gpu_id = regdump.gpu_id;
 	gpu_props->raw_props.tiler_features = regdump.tiler_features;
 	gpu_props->raw_props.mem_features = regdump.mem_features;
 	gpu_props->raw_props.mmu_features = regdump.mmu_features;
 	gpu_props->raw_props.l2_features = regdump.l2_features;
-	gpu_props->raw_props.suspend_size = regdump.suspend_size;
+	gpu_props->raw_props.core_features = regdump.core_features;
 
 	gpu_props->raw_props.as_present = regdump.as_present;
 	gpu_props->raw_props.js_present = regdump.js_present;
@@ -195,13 +148,9 @@ static void kbase_gpuprops_get_props(base_gpu_props * const gpu_props, struct kb
 	gpu_props->raw_props.l2_present =
 		((u64) regdump.l2_present_hi << 32) +
 		regdump.l2_present_lo;
-#ifdef CONFIG_MALI_CORESTACK
 	gpu_props->raw_props.stack_present =
 		((u64) regdump.stack_present_hi << 32) +
 		regdump.stack_present_lo;
-#else /* CONFIG_MALI_CORESTACK */
-	gpu_props->raw_props.stack_present = 0;
-#endif /* CONFIG_MALI_CORESTACK */
 
 	for (i = 0; i < GPU_MAX_JOB_SLOTS; i++)
 		gpu_props->raw_props.js_features[i] = regdump.js_features[i];
@@ -213,32 +162,54 @@ static void kbase_gpuprops_get_props(base_gpu_props * const gpu_props, struct kb
 	gpu_props->raw_props.thread_max_threads = regdump.thread_max_threads;
 	gpu_props->raw_props.thread_max_workgroup_size = regdump.thread_max_workgroup_size;
 	gpu_props->raw_props.thread_features = regdump.thread_features;
+	gpu_props->raw_props.thread_tls_alloc = regdump.thread_tls_alloc;
+
+	gpu_props->raw_props.gpu_features =
+		((u64) regdump.gpu_features_hi << 32) +
+		regdump.gpu_features_lo;
+
+	return 0;
 }
 
-void kbase_gpuprops_update_core_props_gpu_id(base_gpu_props * const gpu_props)
+void kbase_gpuprops_update_core_props_gpu_id(
+	struct base_gpu_props * const gpu_props)
 {
-	gpu_props->core_props.version_status = KBASE_UBFX32(gpu_props->raw_props.gpu_id, 0U, 4);
-	gpu_props->core_props.minor_revision = KBASE_UBFX32(gpu_props->raw_props.gpu_id, 4U, 8);
-	gpu_props->core_props.major_revision = KBASE_UBFX32(gpu_props->raw_props.gpu_id, 12U, 4);
-	gpu_props->core_props.product_id = KBASE_UBFX32(gpu_props->raw_props.gpu_id, 16U, 16);
+	gpu_props->core_props.version_status =
+		KBASE_UBFX32(gpu_props->raw_props.gpu_id, 0U, 4);
+	gpu_props->core_props.minor_revision =
+		KBASE_UBFX32(gpu_props->raw_props.gpu_id, 4U, 8);
+	gpu_props->core_props.major_revision =
+		KBASE_UBFX32(gpu_props->raw_props.gpu_id, 12U, 4);
+	gpu_props->core_props.product_id =
+		KBASE_UBFX32(gpu_props->raw_props.gpu_id, 16U, 16);
 }
 
 /**
  * kbase_gpuprops_calculate_props - Calculate the derived properties
- * @gpu_props: The &base_gpu_props structure
+ * @gpu_props: The &struct base_gpu_props structure
  * @kbdev:     The &struct kbase_device structure for the device
  *
- * Fill the &base_gpu_props structure with values derived from the GPU
+ * Fill the &struct base_gpu_props structure with values derived from the GPU
  * configuration registers
  */
-static void kbase_gpuprops_calculate_props(base_gpu_props * const gpu_props, struct kbase_device *kbdev)
+static void kbase_gpuprops_calculate_props(
+	struct base_gpu_props * const gpu_props, struct kbase_device *kbdev)
 {
 	int i;
+	u32 gpu_id;
 
 	/* Populate the base_gpu_props structure */
 	kbase_gpuprops_update_core_props_gpu_id(gpu_props);
 	gpu_props->core_props.log2_program_counter_size = KBASE_GPU_PC_SIZE_LOG2;
+#if KERNEL_VERSION(5, 0, 0) > LINUX_VERSION_CODE
 	gpu_props->core_props.gpu_available_memory_size = totalram_pages << PAGE_SHIFT;
+#else
+	gpu_props->core_props.gpu_available_memory_size =
+		totalram_pages() << PAGE_SHIFT;
+#endif
+
+	gpu_props->core_props.num_exec_engines =
+		KBASE_UBFX32(gpu_props->raw_props.core_features, 0, 4);
 
 	for (i = 0; i < BASE_GPU_NUM_TEXTURE_FEATURES_REGISTERS; i++)
 		gpu_props->core_props.texture_features[i] = gpu_props->raw_props.texture_features[i];
@@ -248,7 +219,8 @@ static void kbase_gpuprops_calculate_props(base_gpu_props * const gpu_props, str
 
 	/* Field with number of l2 slices is added to MEM_FEATURES register
 	 * since t76x. Below code assumes that for older GPU reserved bits will
-	 * be read as zero. */
+	 * be read as zero.
+	 */
 	gpu_props->l2_props.num_l2_slices =
 		KBASE_UBFX32(gpu_props->raw_props.mem_features, 8U, 4) + 1;
 
@@ -270,10 +242,56 @@ static void kbase_gpuprops_calculate_props(base_gpu_props * const gpu_props, str
 	else
 		gpu_props->thread_props.max_barrier_size = gpu_props->raw_props.thread_max_barrier_size;
 
-	gpu_props->thread_props.max_registers = KBASE_UBFX32(gpu_props->raw_props.thread_features, 0U, 16);
-	gpu_props->thread_props.max_task_queue = KBASE_UBFX32(gpu_props->raw_props.thread_features, 16U, 8);
-	gpu_props->thread_props.max_thread_group_split = KBASE_UBFX32(gpu_props->raw_props.thread_features, 24U, 6);
-	gpu_props->thread_props.impl_tech = KBASE_UBFX32(gpu_props->raw_props.thread_features, 30U, 2);
+	if (gpu_props->raw_props.thread_tls_alloc == 0)
+		gpu_props->thread_props.tls_alloc =
+				gpu_props->thread_props.max_threads;
+	else
+		gpu_props->thread_props.tls_alloc =
+				gpu_props->raw_props.thread_tls_alloc;
+
+	/* MIDHARC-2364 was intended for tULx.
+	 * Workaround for the incorrectly applied THREAD_FEATURES to tDUx.
+	 */
+	gpu_id = kbdev->gpu_props.props.raw_props.gpu_id;
+
+#if MALI_USE_CSF
+	gpu_props->thread_props.max_registers =
+		KBASE_UBFX32(gpu_props->raw_props.thread_features,
+			     0U, 22);
+	gpu_props->thread_props.impl_tech =
+		KBASE_UBFX32(gpu_props->raw_props.thread_features,
+			     22U, 2);
+	gpu_props->thread_props.max_task_queue =
+		KBASE_UBFX32(gpu_props->raw_props.thread_features,
+			     24U, 8);
+	gpu_props->thread_props.max_thread_group_split = 0;
+#else
+	if ((gpu_id & GPU_ID2_PRODUCT_MODEL) == GPU_ID2_PRODUCT_TDUX) {
+		gpu_props->thread_props.max_registers =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     0U, 22);
+		gpu_props->thread_props.impl_tech =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     22U, 2);
+		gpu_props->thread_props.max_task_queue =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     24U, 8);
+		gpu_props->thread_props.max_thread_group_split = 0;
+	} else {
+		gpu_props->thread_props.max_registers =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     0U, 16);
+		gpu_props->thread_props.max_task_queue =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     16U, 8);
+		gpu_props->thread_props.max_thread_group_split =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     24U, 6);
+		gpu_props->thread_props.impl_tech =
+			KBASE_UBFX32(gpu_props->raw_props.thread_features,
+				     30U, 2);
+	}
+#endif
 
 	/* If values are not specified, then use defaults */
 	if (gpu_props->thread_props.max_registers == 0) {
@@ -290,7 +308,7 @@ void kbase_gpuprops_set(struct kbase_device *kbdev)
 	struct kbase_gpu_props *gpu_props;
 	struct gpu_raw_gpu_props *raw;
 
-	KBASE_DEBUG_ASSERT(NULL != kbdev);
+	KBASE_DEBUG_ASSERT(kbdev != NULL);
 	gpu_props = &kbdev->gpu_props;
 	raw = &gpu_props->props.raw_props;
 
@@ -315,15 +333,18 @@ void kbase_gpuprops_set(struct kbase_device *kbdev)
 	gpu_props->num_job_slots = hweight32(raw->js_present);
 }
 
-void kbase_gpuprops_set_features(struct kbase_device *kbdev)
+int kbase_gpuprops_set_features(struct kbase_device *kbdev)
 {
-	base_gpu_props *gpu_props;
+	struct base_gpu_props *gpu_props;
 	struct kbase_gpuprops_regdump regdump;
+	int err;
 
 	gpu_props = &kbdev->gpu_props.props;
 
 	/* Dump relevant registers */
-	kbase_backend_gpuprops_get_features(kbdev, &regdump);
+	err = kbase_backend_gpuprops_get_features(kbdev, &regdump);
+	if (err)
+		return err;
 
 	/*
 	 * Copy the raw value from the register, later this will get turned
@@ -332,6 +353,153 @@ void kbase_gpuprops_set_features(struct kbase_device *kbdev)
 	 */
 	gpu_props->raw_props.coherency_mode = regdump.coherency_features |
 		COHERENCY_FEATURE_BIT(COHERENCY_NONE);
+
+	if (!kbase_hw_has_feature(kbdev, BASE_HW_FEATURE_THREAD_GROUP_SPLIT))
+		gpu_props->thread_props.max_thread_group_split = 0;
+
+	return err;
+}
+
+/*
+ * Module parameters to allow the L2 size and hash configuration to be
+ * overridden.
+ *
+ * These parameters must be set on insmod to take effect, and are not visible
+ * in sysfs.
+ */
+static u8 override_l2_size;
+module_param(override_l2_size, byte, 0000);
+MODULE_PARM_DESC(override_l2_size, "Override L2 size config for testing");
+
+static u8 override_l2_hash;
+module_param(override_l2_hash, byte, 0000);
+MODULE_PARM_DESC(override_l2_hash, "Override L2 hash config for testing");
+
+static u32 l2_hash_values[ASN_HASH_COUNT] = {
+	0,
+};
+static int num_override_l2_hash_values;
+module_param_array(l2_hash_values, uint, &num_override_l2_hash_values, 0000);
+MODULE_PARM_DESC(l2_hash_values, "Override L2 hash values config for testing");
+
+enum l2_config_override_result {
+	L2_CONFIG_OVERRIDE_FAIL = -1,
+	L2_CONFIG_OVERRIDE_NONE,
+	L2_CONFIG_OVERRIDE_OK,
+};
+
+/**
+ * kbase_read_l2_config_from_dt - Read L2 configuration
+ * @kbdev: The kbase device for which to get the L2 configuration.
+ *
+ * Check for L2 configuration overrides in module parameters and device tree.
+ * Override values in module parameters take priority over override values in
+ * device tree.
+ *
+ * Return: L2_CONFIG_OVERRIDE_OK if either size or hash, or both was properly
+ *         overridden, L2_CONFIG_OVERRIDE_NONE if no overrides are provided.
+ *         L2_CONFIG_OVERRIDE_FAIL otherwise.
+ */
+static enum l2_config_override_result
+kbase_read_l2_config_from_dt(struct kbase_device *const kbdev)
+{
+	struct device_node *np = kbdev->dev->of_node;
+
+	if (!np)
+		return L2_CONFIG_OVERRIDE_NONE;
+
+	if (override_l2_size)
+		kbdev->l2_size_override = override_l2_size;
+	else if (of_property_read_u8(np, "l2-size", &kbdev->l2_size_override))
+		kbdev->l2_size_override = 0;
+
+	if (override_l2_hash)
+		kbdev->l2_hash_override = override_l2_hash;
+	else if (of_property_read_u8(np, "l2-hash", &kbdev->l2_hash_override))
+		kbdev->l2_hash_override = 0;
+
+	kbdev->l2_hash_values_override = false;
+	if (num_override_l2_hash_values) {
+		int i;
+
+		kbdev->l2_hash_values_override = true;
+		for (i = 0; i < num_override_l2_hash_values; i++)
+			kbdev->l2_hash_values[i] = l2_hash_values[i];
+	} else if (!of_property_read_u32_array(np, "l2-hash-values",
+					       kbdev->l2_hash_values,
+					       ASN_HASH_COUNT))
+		kbdev->l2_hash_values_override = true;
+
+	if (kbase_hw_has_feature(kbdev, BASE_HW_FEATURE_ASN_HASH) &&
+	    (kbdev->l2_hash_override)) {
+		dev_err(kbdev->dev, "l2-hash not supported\n");
+		return L2_CONFIG_OVERRIDE_FAIL;
+	}
+
+	if (!kbase_hw_has_feature(kbdev, BASE_HW_FEATURE_ASN_HASH) &&
+	    (kbdev->l2_hash_values_override)) {
+		dev_err(kbdev->dev, "l2-hash-values not supported\n");
+		return L2_CONFIG_OVERRIDE_FAIL;
+	}
+
+	if (kbdev->l2_hash_override && kbdev->l2_hash_values_override) {
+		dev_err(kbdev->dev,
+			"both l2-hash & l2-hash-values not supported\n");
+		return L2_CONFIG_OVERRIDE_FAIL;
+	}
+
+	if (kbdev->l2_size_override || kbdev->l2_hash_override ||
+	    kbdev->l2_hash_values_override)
+		return L2_CONFIG_OVERRIDE_OK;
+
+	return L2_CONFIG_OVERRIDE_NONE;
+}
+
+int kbase_gpuprops_update_l2_features(struct kbase_device *kbdev)
+{
+	int err = 0;
+
+	if (kbase_hw_has_feature(kbdev, BASE_HW_FEATURE_L2_CONFIG)) {
+		struct kbase_gpuprops_regdump regdump;
+		struct base_gpu_props *gpu_props = &kbdev->gpu_props.props;
+
+		/* Check for L2 cache size & hash overrides */
+		switch (kbase_read_l2_config_from_dt(kbdev)) {
+		case L2_CONFIG_OVERRIDE_FAIL:
+			err = -EIO;
+			goto exit;
+		case L2_CONFIG_OVERRIDE_NONE:
+			goto exit;
+		default:
+			break;
+		}
+
+		/* Need L2 to get powered to reflect to L2_FEATURES */
+		kbase_pm_context_active(kbdev);
+
+		/* Wait for the completion of L2 power transition */
+		kbase_pm_wait_for_l2_powered(kbdev);
+
+		/* Dump L2_FEATURES register */
+		err = kbase_backend_gpuprops_get_l2_features(kbdev, &regdump);
+		if (err)
+			goto idle_gpu;
+
+		dev_info(kbdev->dev, "Reflected L2_FEATURES is 0x%x\n",
+				regdump.l2_features);
+
+		/* Update gpuprops with reflected L2_FEATURES */
+		gpu_props->raw_props.l2_features = regdump.l2_features;
+		gpu_props->l2_props.log2_cache_size =
+			KBASE_UBFX32(gpu_props->raw_props.l2_features, 16U, 8);
+
+idle_gpu:
+		/* Let GPU idle */
+		kbase_pm_context_idle(kbdev);
+}
+
+exit:
+	return err;
 }
 
 static struct {
@@ -340,20 +508,20 @@ static struct {
 	int size;
 } gpu_property_mapping[] = {
 #define PROP(name, member) \
-	{KBASE_GPUPROP_ ## name, offsetof(struct mali_base_gpu_props, member), \
-		sizeof(((struct mali_base_gpu_props *)0)->member)}
+	{KBASE_GPUPROP_ ## name, offsetof(struct base_gpu_props, member), \
+		sizeof(((struct base_gpu_props *)0)->member)}
 	PROP(PRODUCT_ID,                  core_props.product_id),
 	PROP(VERSION_STATUS,              core_props.version_status),
 	PROP(MINOR_REVISION,              core_props.minor_revision),
 	PROP(MAJOR_REVISION,              core_props.major_revision),
-	PROP(GPU_SPEED_MHZ,               core_props.gpu_speed_mhz),
 	PROP(GPU_FREQ_KHZ_MAX,            core_props.gpu_freq_khz_max),
-	PROP(GPU_FREQ_KHZ_MIN,            core_props.gpu_freq_khz_min),
 	PROP(LOG2_PROGRAM_COUNTER_SIZE,   core_props.log2_program_counter_size),
 	PROP(TEXTURE_FEATURES_0,          core_props.texture_features[0]),
 	PROP(TEXTURE_FEATURES_1,          core_props.texture_features[1]),
 	PROP(TEXTURE_FEATURES_2,          core_props.texture_features[2]),
+	PROP(TEXTURE_FEATURES_3,          core_props.texture_features[3]),
 	PROP(GPU_AVAILABLE_MEMORY_SIZE,   core_props.gpu_available_memory_size),
+	PROP(NUM_EXEC_ENGINES,            core_props.num_exec_engines),
 
 	PROP(L2_LOG2_LINE_SIZE,           l2_props.log2_line_size),
 	PROP(L2_LOG2_CACHE_SIZE,          l2_props.log2_cache_size),
@@ -369,13 +537,14 @@ static struct {
 	PROP(MAX_TASK_QUEUE,              thread_props.max_task_queue),
 	PROP(MAX_THREAD_GROUP_SPLIT,      thread_props.max_thread_group_split),
 	PROP(IMPL_TECH,                   thread_props.impl_tech),
+	PROP(TLS_ALLOC,                   thread_props.tls_alloc),
 
 	PROP(RAW_SHADER_PRESENT,          raw_props.shader_present),
 	PROP(RAW_TILER_PRESENT,           raw_props.tiler_present),
 	PROP(RAW_L2_PRESENT,              raw_props.l2_present),
 	PROP(RAW_STACK_PRESENT,           raw_props.stack_present),
 	PROP(RAW_L2_FEATURES,             raw_props.l2_features),
-	PROP(RAW_SUSPEND_SIZE,            raw_props.suspend_size),
+	PROP(RAW_CORE_FEATURES,           raw_props.core_features),
 	PROP(RAW_MEM_FEATURES,            raw_props.mem_features),
 	PROP(RAW_MMU_FEATURES,            raw_props.mmu_features),
 	PROP(RAW_AS_PRESENT,              raw_props.as_present),
@@ -400,14 +569,16 @@ static struct {
 	PROP(RAW_TEXTURE_FEATURES_0,      raw_props.texture_features[0]),
 	PROP(RAW_TEXTURE_FEATURES_1,      raw_props.texture_features[1]),
 	PROP(RAW_TEXTURE_FEATURES_2,      raw_props.texture_features[2]),
+	PROP(RAW_TEXTURE_FEATURES_3,      raw_props.texture_features[3]),
 	PROP(RAW_GPU_ID,                  raw_props.gpu_id),
 	PROP(RAW_THREAD_MAX_THREADS,      raw_props.thread_max_threads),
 	PROP(RAW_THREAD_MAX_WORKGROUP_SIZE,
 			raw_props.thread_max_workgroup_size),
 	PROP(RAW_THREAD_MAX_BARRIER_SIZE, raw_props.thread_max_barrier_size),
 	PROP(RAW_THREAD_FEATURES,         raw_props.thread_features),
+	PROP(RAW_THREAD_TLS_ALLOC,        raw_props.thread_tls_alloc),
 	PROP(RAW_COHERENCY_MODE,          raw_props.coherency_mode),
-
+	PROP(RAW_GPU_FEATURES,            raw_props.gpu_features),
 	PROP(COHERENCY_NUM_GROUPS,        coherency_info.num_groups),
 	PROP(COHERENCY_NUM_CORE_GROUPS,   coherency_info.num_core_groups),
 	PROP(COHERENCY_COHERENCY,         coherency_info.coherency),
@@ -434,7 +605,7 @@ static struct {
 int kbase_gpuprops_populate_user_buffer(struct kbase_device *kbdev)
 {
 	struct kbase_gpu_props *kprops = &kbdev->gpu_props;
-	struct mali_base_gpu_props *props = &kprops->props;
+	struct base_gpu_props *props = &kprops->props;
 	u32 count = ARRAY_SIZE(gpu_property_mapping);
 	u32 i;
 	u32 size = 0;
@@ -505,6 +676,28 @@ int kbase_gpuprops_populate_user_buffer(struct kbase_device *kbdev)
 			return -EINVAL;
 		}
 	}
+
+	return 0;
+}
+
+void kbase_gpuprops_free_user_buffer(struct kbase_device *kbdev)
+{
+	kfree(kbdev->gpu_props.prop_buffer);
+}
+
+int kbase_device_populate_max_freq(struct kbase_device *kbdev)
+{
+	struct mali_base_gpu_core_props *core_props;
+
+	/* obtain max configured gpu frequency, if devfreq is enabled then
+	 * this will be overridden by the highest operating point found
+	 */
+	core_props = &(kbdev->gpu_props.props.core_props);
+#ifdef GPU_FREQ_KHZ_MAX
+	core_props->gpu_freq_khz_max = GPU_FREQ_KHZ_MAX;
+#else
+	core_props->gpu_freq_khz_max = DEFAULT_GPU_FREQ_KHZ_MAX;
+#endif
 
 	return 0;
 }
